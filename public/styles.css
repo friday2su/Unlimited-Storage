@@ -103,6 +103,14 @@ body {
     50% { opacity: 0.6; }
 }
 
+.language-selector select {
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 50px;
+    padding: 10px 14px;
+}
+
 .upload-button {
     padding: 12px 35px;
     background-color: var(--bg-secondary);
@@ -545,8 +553,26 @@ body {
 .progress-fill {
     height: 100%;
     background-color: var(--accent-green);
-    transition: width 0.3s ease;
+    transition: width 0.5s cubic-bezier(0.23, 1, 0.32, 1);
     width: 0%;
+    position: relative;
+    overflow: hidden;
+}
+
+.progress-fill::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+    animation: shimmer 2s infinite;
+}
+
+@keyframes shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
 }
 
 .progress-text {

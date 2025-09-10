@@ -13,7 +13,7 @@
         <!-- Header Bar -->
         <header class="header-bar">
             <div class="telegram-status">
-                <span class="brand-text">Telegram</span>
+                <span class="brand-text" data-i18n="brand">Telegram</span>
                 <div class="status-indicator" id="connectionStatus"></div>
             </div>
             
@@ -23,10 +23,20 @@
                     <circle cx="11" cy="11" r="8"/>
                     <path d="m21 21-4.35-4.35"/>
                 </svg>
-                <input type="text" id="searchInput" class="search-input" placeholder="Search videos..." onkeyup="app.searchVideos(this.value)">
+                <input type="text" id="searchInput" class="search-input" data-i18n="searchPlaceholder" placeholder="Search videos..." onkeyup="app.searchVideos(this.value)">
             </div>
             
-            <button class="upload-button" onclick="openUploadModal()">
+            <!-- Language Selector -->
+            <div class="language-selector">
+                <select id="languageSelect" onchange="app.changeLanguage(this.value)">
+                    <option value="en">English</option>
+                    <option value="es">Español</option>
+                    <option value="fr">Français</option>
+                    <option value="zh">中文</option>
+                </select>
+            </div>
+            
+            <button class="upload-button" onclick="openUploadModal()" data-i18n="upload">
                 Upload
             </button>
         </header>
@@ -197,6 +207,7 @@
     <div class="toast-container" id="toastContainer"></div>
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="languages.js"></script>
     <script src="script.js"></script>
 </body>
 </html>

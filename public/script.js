@@ -15,6 +15,19 @@ class StreamDriveApp {
         this.setupEventListeners();
         this.loadVideos();
         this.updateBackupStatus();
+        
+        // Initialize language
+        if (window.lang) {
+            const savedLang = localStorage.getItem('preferredLanguage') || 'en';
+            document.getElementById('languageSelect').value = savedLang;
+            window.lang.updateUI();
+        }
+    }
+    
+    changeLanguage(lang) {
+        if (window.lang) {
+            window.lang.setLanguage(lang);
+        }
     }
 
     setupEventListeners() {
@@ -402,11 +415,17 @@ class StreamDriveApp {
             try {
                 const xhr = new XMLHttpRequest();
                 
+                // Reset progress bar to 0
+                progressFill.style.width = '0%';
+                
                 xhr.upload.addEventListener('progress', (e) => {
                     if (e.lengthComputable) {
                         const percentComplete = (e.loaded / e.total) * 100;
-                        progressFill.style.width = percentComplete + '%';
-                        progressText.textContent = `Uploading ${file.name}... ${Math.round(percentComplete)}%`;
+                        // Smooth progress update with slight delay for visual feedback
+                        requestAnimationFrame(() => {
+                            progressFill.style.width = percentComplete + '%';
+                            progressText.textContent = `${window.lang ? window.lang.get('uploading') : 'Uploading'} ${file.name}... ${Math.round(percentComplete)}%`;
+                        });
                         
                         // Update queue item progress
                         if (queueItem) {
@@ -419,13 +438,15 @@ class StreamDriveApp {
                 xhr.addEventListener('load', () => {
                     if (xhr.status === 200) {
                         const response = JSON.parse(xhr.responseText);
-                        this.showToast(`${file.name} uploaded successfully!`, 'success');
+                        const successMsg = window.lang ? `${file.name} ${window.lang.get('uploadSuccess')}` : `${file.name} uploaded successfully!`;
+                        this.showToast(successMsg, 'success');
                         this.loadVideos();
-                        progressText.textContent = 'Upload complete!';
+                        progressText.textContent = window.lang ? window.lang.get('uploadComplete') : 'Upload complete!';
                         resolve(true);
                     } else {
                         const error = JSON.parse(xhr.responseText);
-                        this.showToast(`Failed to upload ${file.name}: ${error.error}`, 'error');
+                        const errorMsg = window.lang ? `${window.lang.get('uploadFailed')} ${file.name}: ${error.error}` : `Failed to upload ${file.name}: ${error.error}`;
+                        this.showToast(errorMsg, 'error');
                         resolve(false);
                     }
                     progressContainer.style.display = 'none';
@@ -453,12 +474,12 @@ class StreamDriveApp {
         const maxSize = 2 * 1024 * 1024 * 1024; // 2GB
 
         if (!file.type.startsWith('video/')) {
-            this.showToast('Please select a valid video file', 'error');
+            this.showToast(window.lang ? window.lang.get('selectValidFile') : 'Please select a valid video file', 'error');
             return false;
         }
 
         if (file.size > maxSize) {
-            this.showToast('File size must be less than 2GB', 'error');
+            this.showToast(window.lang ? window.lang.get('fileSizeLimit') : 'File size must be less than 2GB', 'error');
             return false;
         }
 
