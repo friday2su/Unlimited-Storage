@@ -16,6 +16,16 @@
                 <span class="brand-text">Telegram</span>
                 <div class="status-indicator" id="connectionStatus"></div>
             </div>
+            
+            <!-- Search Bar -->
+            <div class="search-container">
+                <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/>
+                    <path d="m21 21-4.35-4.35"/>
+                </svg>
+                <input type="text" id="searchInput" class="search-input" placeholder="Search videos..." onkeyup="app.searchVideos(this.value)">
+            </div>
+            
             <button class="upload-button" onclick="openUploadModal()">
                 Upload
             </button>
@@ -23,6 +33,50 @@
 
         <!-- Main Content Area -->
         <main class="content-area">
+            <!-- Category Filter -->
+            <div class="category-filter" id="categoryFilter">
+                <button class="category-btn active" data-category="all" onclick="app.filterByCategory('all')">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="3" width="7" height="7"/>
+                        <rect x="14" y="3" width="7" height="7"/>
+                        <rect x="14" y="14" width="7" height="7"/>
+                        <rect x="3" y="14" width="7" height="7"/>
+                    </svg>
+                    <span>All</span>
+                </button>
+                <button class="category-btn" data-category="movies" onclick="app.filterByCategory('movies')">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/>
+                        <line x1="7" y1="2" x2="7" y2="22"/>
+                        <line x1="17" y1="2" x2="17" y2="22"/>
+                    </svg>
+                    <span>Movies</span>
+                </button>
+                <button class="category-btn" data-category="series" onclick="app.filterByCategory('series')">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                        <line x1="9" y1="9" x2="15" y2="9"/>
+                        <line x1="9" y1="15" x2="15" y2="15"/>
+                    </svg>
+                    <span>Series</span>
+                </button>
+                <button class="category-btn" data-category="tutorials" onclick="app.filterByCategory('tutorials')">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                    </svg>
+                    <span>Tutorials</span>
+                </button>
+                <button class="category-btn" data-category="other" onclick="app.filterByCategory('other')">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="1"/>
+                        <circle cx="12" cy="5" r="1"/>
+                        <circle cx="12" cy="19" r="1"/>
+                    </svg>
+                    <span>Other</span>
+                </button>
+            </div>
+            
             <!-- Videos Grid -->
             <div class="videos-container" id="videosGrid">
                 <div class="loading-state" id="loadingSpinner">
@@ -56,10 +110,20 @@
             </div>
             
             <div class="upload-area" id="uploadArea">
-                <i class="fas fa-cloud-upload-alt"></i>
-                <h3>Drop your video here</h3>
-                <p>or click to browse</p>
-                <input type="file" id="fileInput" accept="video/*" style="display: none;">
+                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.5">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                <h3>Drop your videos here</h3>
+                <p>or click to browse (multiple files supported)</p>
+                <input type="file" id="fileInput" accept="video/*" multiple style="display: none;">
+            </div>
+            
+            <!-- Upload Queue -->
+            <div class="upload-queue" id="uploadQueue" style="display: none;">
+                <h4>Upload Queue</h4>
+                <div class="queue-list" id="queueList"></div>
             </div>
             
             <div class="upload-progress" id="uploadProgress">

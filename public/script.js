@@ -1,7 +1,13 @@
 class StreamDriveApp {
     constructor() {
         this.videos = [];
+        this.filteredVideos = [];
         this.currentPlayer = null;
+        this.searchTerm = '';
+        this.currentCategory = 'all';
+        this.uploadQueue = [];
+        this.isUploading = false;
+        this.currentUploadIndex = 0;
         this.init();
     }
 
@@ -31,9 +37,9 @@ class StreamDriveApp {
         uploadArea.addEventListener('drop', (e) => {
             e.preventDefault();
             uploadArea.classList.remove('dragover');
-            const files = e.dataTransfer.files;
+            const files = Array.from(e.dataTransfer.files);
             if (files.length > 0) {
-                this.uploadFile(files[0]);
+                this.addFilesToQueue(files);
             }
         });
 
@@ -83,7 +89,7 @@ class StreamDriveApp {
             }
 
             this.videos = await response.json();
-            this.renderVideos();
+            this.applyFilter();
         } catch (error) {
             console.error('Error loading videos:', error);
             this.showToast('Failed to load videos', 'error');
@@ -97,18 +103,56 @@ class StreamDriveApp {
 
     renderVideos() {
         const videosGrid = document.getElementById('videosGrid');
+        const list = this.filteredVideos.length || this.searchTerm ? this.filteredVideos : this.videos;
         
-        if (this.videos.length === 0) {
-            this.showEmptyState('No videos uploaded yet');
+        if (!list || list.length === 0) {
+            this.showEmptyState(this.searchTerm ? 'No results found' : 'No videos uploaded yet');
             return;
         }
 
         videosGrid.innerHTML = '';
 
-        this.videos.forEach(video => {
+        list.forEach(video => {
             const videoCard = this.createVideoCard(video);
             videosGrid.appendChild(videoCard);
         });
+    }
+
+    applyFilter() {
+        let filtered = [...this.videos];
+        
+        // Apply category filter
+        if (this.currentCategory && this.currentCategory !== 'all') {
+            filtered = filtered.filter(v => (v.category || 'other') === this.currentCategory);
+        }
+        
+        // Apply search filter
+        if (this.searchTerm) {
+            const term = this.searchTerm.toLowerCase();
+            filtered = filtered.filter(v => (v.originalName || '').toLowerCase().includes(term));
+        }
+        
+        this.filteredVideos = filtered;
+        this.renderVideos();
+    }
+
+    searchVideos(term) {
+        this.searchTerm = term.trim();
+        this.applyFilter();
+    }
+    
+    filterByCategory(category) {
+        this.currentCategory = category;
+        
+        // Update active button
+        document.querySelectorAll('.category-btn').forEach(btn => {
+            btn.classList.remove('active');
+            if (btn.dataset.category === category) {
+                btn.classList.add('active');
+            }
+        });
+        
+        this.applyFilter();
     }
 
     createVideoCard(video) {
@@ -157,7 +201,6 @@ class StreamDriveApp {
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                             <path d="M8 5v14l11-7z"/>
                         </svg>
-                        <span>Play</span>
                     </button>
                     <button class="action-btn" onclick="app.downloadVideo('${video.id}')" title="Download">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -165,14 +208,24 @@ class StreamDriveApp {
                             <polyline points="7 10 12 15 17 10"/>
                             <line x1="12" y1="15" x2="12" y2="3"/>
                         </svg>
-                        <span>Download</span>
                     </button>
                     <button class="action-btn" onclick="app.copyVideoUrl('${video.id}')" title="Copy URL">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
                             <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
                         </svg>
-                        <span>URL</span>
+                    </button>
+                    <button class="action-btn" onclick="app.showRenameModal('${video.id}')" title="Rename">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 20h9"/>
+                            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                        </svg>
+                    </button>
+                    <button class="action-btn" onclick="app.confirmDelete('${video.id}')" title="Delete">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="3 6 5 6 21 6"/>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                        </svg>
                     </button>
                 </div>
             </div>
@@ -211,6 +264,7 @@ class StreamDriveApp {
         
         const uploadProgress = document.getElementById('uploadProgress');
         const progressFill = document.getElementById('progressFill');
+        const uploadQueue = document.getElementById('uploadQueue');
         
         if (uploadProgress) {
             uploadProgress.style.display = 'none';
@@ -218,18 +272,120 @@ class StreamDriveApp {
         if (progressFill) {
             progressFill.style.width = '0%';
         }
-    }
-
-    handleFileSelect(event) {
-        const file = event.target.files[0];
-        if (file) {
-            this.uploadFile(file);
+        if (uploadQueue) {
+            uploadQueue.style.display = 'none';
+        }
+        
+        // Clear file input
+        const fileInput = document.getElementById('fileInput');
+        if (fileInput) {
+            fileInput.value = '';
         }
     }
 
-    async uploadFile(file) {
-        if (!this.validateFile(file)) {
+    handleFileSelect(event) {
+        const files = Array.from(event.target.files);
+        if (files.length > 0) {
+            this.addFilesToQueue(files);
+        }
+    }
+    
+    addFilesToQueue(files) {
+        // Validate and add files to queue
+        const validFiles = files.filter(file => this.validateFile(file));
+        
+        if (validFiles.length === 0) return;
+        
+        // Add files to queue
+        validFiles.forEach(file => {
+            this.uploadQueue.push({
+                file: file,
+                status: 'pending',
+                progress: 0,
+                id: Date.now() + Math.random()
+            });
+        });
+        
+        // Update queue display
+        this.updateQueueDisplay();
+        
+        // Start processing queue if not already uploading
+        if (!this.isUploading) {
+            this.processUploadQueue();
+        }
+    }
+    
+    updateQueueDisplay() {
+        const queueContainer = document.getElementById('uploadQueue');
+        const queueList = document.getElementById('queueList');
+        
+        if (this.uploadQueue.length === 0) {
+            queueContainer.style.display = 'none';
             return;
+        }
+        
+        queueContainer.style.display = 'block';
+        
+        queueList.innerHTML = this.uploadQueue.map((item, index) => `
+            <div class="queue-item ${item.status}">
+                <span class="queue-item-name">${item.file.name}</span>
+                <span class="queue-item-status">
+                    ${item.status === 'uploading' ? `${Math.round(item.progress)}%` : 
+                      item.status === 'completed' ? '✓' : 
+                      item.status === 'failed' ? '✗' : 'Waiting...'}
+                </span>
+            </div>
+        `).join('');
+    }
+    
+    async processUploadQueue() {
+        if (this.uploadQueue.length === 0 || this.isUploading) return;
+        
+        this.isUploading = true;
+        
+        while (this.uploadQueue.length > 0) {
+            const currentItem = this.uploadQueue.find(item => item.status === 'pending');
+            if (!currentItem) break;
+            
+            currentItem.status = 'uploading';
+            this.updateQueueDisplay();
+            
+            const success = await this.uploadFile(currentItem.file, currentItem);
+            
+            currentItem.status = success ? 'completed' : 'failed';
+            this.updateQueueDisplay();
+            
+            // Remove completed items after a delay
+            if (success) {
+                setTimeout(() => {
+                    const index = this.uploadQueue.indexOf(currentItem);
+                    if (index > -1) {
+                        this.uploadQueue.splice(index, 1);
+                        this.updateQueueDisplay();
+                    }
+                }, 3000);
+            }
+        }
+        
+        this.isUploading = false;
+        
+        // Check if all uploads are complete
+        const allComplete = this.uploadQueue.every(item => 
+            item.status === 'completed' || item.status === 'failed'
+        );
+        
+        if (allComplete) {
+            setTimeout(() => {
+                this.closeUploadModal();
+                this.uploadQueue = [];
+                this.updateQueueDisplay();
+            }, 2000);
+        }
+    }
+
+    async uploadFile(file, queueItem = null) {
+        if (!this.validateFile(file)) {
+            return false;
         }
 
         const formData = new FormData();
@@ -240,48 +396,57 @@ class StreamDriveApp {
         const progressText = document.getElementById('progressText');
 
         progressContainer.style.display = 'block';
-        progressText.textContent = 'Uploading...';
+        progressText.textContent = `Uploading ${file.name}...`;
 
-        try {
-            const xhr = new XMLHttpRequest();
-            
-            xhr.upload.addEventListener('progress', (e) => {
-                if (e.lengthComputable) {
-                    const percentComplete = (e.loaded / e.total) * 100;
-                    progressFill.style.width = percentComplete + '%';
-                    progressText.textContent = `Uploading... ${Math.round(percentComplete)}%`;
-                }
-            });
+        return new Promise((resolve) => {
+            try {
+                const xhr = new XMLHttpRequest();
+                
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const percentComplete = (e.loaded / e.total) * 100;
+                        progressFill.style.width = percentComplete + '%';
+                        progressText.textContent = `Uploading ${file.name}... ${Math.round(percentComplete)}%`;
+                        
+                        // Update queue item progress
+                        if (queueItem) {
+                            queueItem.progress = percentComplete;
+                            this.updateQueueDisplay();
+                        }
+                    }
+                });
 
-            xhr.addEventListener('load', () => {
-                if (xhr.status === 200) {
-                    const response = JSON.parse(xhr.responseText);
-                    this.showToast('Video uploaded successfully!', 'success');
-                    this.loadVideos();
-                    progressText.textContent = 'Upload complete!';
-                    setTimeout(() => {
-                        this.closeUploadModal();
-                    }, 2000);
-                } else {
-                    const error = JSON.parse(xhr.responseText);
-                    this.showToast(`Upload failed: ${error.error}`, 'error');
+                xhr.addEventListener('load', () => {
+                    if (xhr.status === 200) {
+                        const response = JSON.parse(xhr.responseText);
+                        this.showToast(`${file.name} uploaded successfully!`, 'success');
+                        this.loadVideos();
+                        progressText.textContent = 'Upload complete!';
+                        resolve(true);
+                    } else {
+                        const error = JSON.parse(xhr.responseText);
+                        this.showToast(`Failed to upload ${file.name}: ${error.error}`, 'error');
+                        resolve(false);
+                    }
                     progressContainer.style.display = 'none';
-                }
-            });
+                });
 
-            xhr.addEventListener('error', () => {
-                this.showToast('Upload failed: Network error', 'error');
+                xhr.addEventListener('error', () => {
+                    this.showToast(`Failed to upload ${file.name}: Network error`, 'error');
+                    progressContainer.style.display = 'none';
+                    resolve(false);
+                });
+
+                xhr.open('POST', '/api/upload');
+                xhr.send(formData);
+
+            } catch (error) {
+                console.error('Upload error:', error);
+                this.showToast(`Failed to upload ${file.name}: ${error.message}`, 'error');
                 progressContainer.style.display = 'none';
-            });
-
-            xhr.open('POST', '/api/upload');
-            xhr.send(formData);
-
-        } catch (error) {
-            console.error('Upload error:', error);
-            this.showToast('Upload failed: ' + error.message, 'error');
-            progressContainer.style.display = 'none';
-        }
+                resolve(false);
+            }
+        });
     }
 
     validateFile(file) {
