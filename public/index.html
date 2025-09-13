@@ -112,35 +112,122 @@
     <!-- Upload Modal -->
     <div class="upload-modal" id="uploadModal">
         <div class="upload-content">
-            <div class="upload-header">
-                <h2>Upload Video</h2>
-                <button class="close-btn" onclick="closeUploadModal()">
+            <!-- Header - always visible -->
+            <div class="upload-header" id="uploadHeader">
+                <h2 id="uploadHeaderTitle">Upload Video</h2>
+                <button class="close-btn" onclick="closeUploadModal()" id="uploadCloseBtn">
                     <i class="fas fa-times"></i>
                 </button>
             </div>
             
-            <div class="upload-area" id="uploadArea">
-                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.5">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                    <polyline points="17 8 12 3 7 8"/>
-                    <line x1="12" y1="3" x2="12" y2="15"/>
-                </svg>
-                <h3>Drop your videos here</h3>
-                <p>or click to browse (multiple files supported)</p>
-                <input type="file" id="fileInput" accept="video/*" multiple style="display: none;">
-            </div>
-            
-            <!-- Upload Queue -->
-            <div class="upload-queue" id="uploadQueue" style="display: none;">
-                <h4>Upload Queue</h4>
-                <div class="queue-list" id="queueList"></div>
-            </div>
-            
-            <div class="upload-progress" id="uploadProgress">
-                <div class="progress-bar">
-                    <div class="progress-fill" id="progressFill"></div>
+            <!-- Initial upload area - hidden during processing -->
+            <div class="upload-sections" id="uploadSections">
+                <div class="upload-area" id="uploadArea">
+                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.5">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                    <h3>Drop your videos here</h3>
+                    <p>or click to browse (multiple files supported)</p>
+                    <input type="file" id="fileInput" accept="video/*" multiple style="display: none;">
                 </div>
-                <div class="progress-text" id="progressText">Uploading...</div>
+                
+                <!-- Compression Settings -->
+                <div class="compression-settings" id="compressionSettings" style="display: none;">
+                    <h4>Compression Settings</h4>
+                    <div class="compression-options">
+                        <div class="compression-toggle">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="enableCompression" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <span>Enable compression before upload</span>
+                        </div>
+                        
+                        <div class="compression-controls" id="compressionControls">
+                            <div class="quality-preset">
+                                <label for="qualityPreset">Quality Preset:</label>
+                                <select id="qualityPreset">
+                                    <option value="high">High Quality (Larger file)</option>
+                                    <option value="medium" selected>Balanced (Recommended)</option>
+                                    <option value="low">Low Quality (Smaller file)</option>
+                                    <option value="custom">Custom</option>
+                                </select>
+                            </div>
+                            
+                            <div class="custom-settings" id="customSettings" style="display: none;">
+                                <div class="setting-group">
+                                    <label for="videoResolution">Resolution:</label>
+                                    <select id="videoResolution">
+                                        <option value="original">Original</option>
+                                        <option value="1080p">1080p (Full HD)</option>
+                                        <option value="720p" selected>720p (HD)</option>
+                                        <option value="480p">480p (SD)</option>
+                                        <option value="360p">360p</option>
+                                    </select>
+                                </div>
+                                
+                                <div class="setting-group">
+                                    <label for="videoBitrate">Bitrate (Mbps):</label>
+                                    <input type="range" id="videoBitrate" min="0.5" max="10" step="0.5" value="2.5">
+                                    <span id="bitrateValue">2.5 Mbps</span>
+                                </div>
+                                
+                                <div class="setting-group">
+                                    <label for="videoFps">Frame Rate:</label>
+                                    <select id="videoFps">
+                                        <option value="original">Original</option>
+                                        <option value="60">60 fps</option>
+                                        <option value="30" selected>30 fps</option>
+                                        <option value="24">24 fps</option>
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            <div class="compression-info">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <circle cx="12" cy="12" r="10"/>
+                                    <path d="M12 16v-4"/>
+                                    <path d="M12 8h.01"/>
+                                </svg>
+                                <span id="compressionInfo">Compression will reduce file size and upload time</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Minimal Progress Section - shown during upload/processing -->
+            <div class="minimal-progress" id="minimalProgress" style="display: none;">
+                <!-- Progress Bar -->
+                <div class="progress-container">
+                    <div class="progress-bar" id="mainProgressBar">
+                        <div class="progress-fill" id="mainProgressFill"></div>
+                    </div>
+                    <div class="progress-details">
+                        <div class="progress-text" id="mainProgressText">Preparing...</div>
+                        <div class="progress-percentage" id="mainProgressPercentage">0%</div>
+                    </div>
+                </div>
+                
+                <!-- Current File Info -->
+                <div class="current-file-info" id="currentFileInfo">
+                    <div class="file-name" id="currentFileName">sample-file.mp4</div>
+                    <div class="file-meta">
+                        <div class="file-size" id="currentFileSize">14.61 MB</div>
+                        <div class="quality-info" id="currentQualityInfo" style="display: none;"></div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Queue List for Multiple Files - compact version -->
+            <div class="upload-queue minimal" id="uploadQueue" style="display: none;">
+                <div class="queue-header">
+                    <h4>Upload Queue</h4>
+                    <span class="queue-count" id="queueCount">1 of 3</span>
+                </div>
+                <div class="queue-list" id="queueList"></div>
             </div>
         </div>
     </div>
@@ -157,6 +244,42 @@
             <video id="videoPlayer" controls>
                 Your browser does not support the video tag.
             </video>
+            <div class="player-controls">
+                <!-- Quality Selector -->
+                <div class="quality-selector" id="qualitySelector">
+                    <label for="qualitySelect">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                            <path d="M2 17l10 5 10-5"/>
+                            <path d="M2 12l10 5 10-5"/>
+                        </svg>
+                        Quality:
+                    </label>
+                    <select id="qualitySelect" onchange="app.switchQuality(this.value)">
+                        <option value="auto" selected>Auto</option>
+                        <option value="1080p">1080p</option>
+                        <option value="720p">720p</option>
+                        <option value="480p">480p</option>
+                        <option value="360p">360p</option>
+                    </select>
+                    <span class="quality-indicator" id="qualityIndicator"></span>
+                </div>
+                
+                <!-- Audio Track Selector -->
+                <div class="audio-track-selector" id="audioTrackSelector" style="display: none;">
+                    <label for="audioTrackSelect">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M11 5L6 9H2v6h4l5 4V5z"/>
+                            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                        </svg>
+                        Audio Track:
+                    </label>
+                    <select id="audioTrackSelect" onchange="app.switchAudioTrack(this.value)">
+                        <!-- Audio track options will be populated dynamically -->
+                    </select>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -207,7 +330,7 @@
     <div class="toast-container" id="toastContainer"></div>
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-    <script src="languages.js"></script>
-    <script src="script.js"></script>
+    <script src="languages.js?v=2"></script>
+    <script src="script.js?v=2"></script>
 </body>
 </html>

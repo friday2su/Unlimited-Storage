@@ -128,63 +128,91 @@ class CloudStreamingService {
      * Stream chunked files from Telegram (reconstructed on-the-fly)
      */
     async streamChunkedFile(telegramData, range) {
-        // For chunked files, we need to create a readable stream that reconstructs the file
-        const { Readable } = require('stream');
+        console.log(`Streaming chunked file with ${telegramData.chunks.length} chunks`);
         
-        let currentChunkIndex = 0;
-        let currentChunkStream = null;
-        let totalSize = 0;
-        
-        // Calculate total size from chunks
-        if (telegramData.chunks) {
-            totalSize = telegramData.chunks.reduce((sum, chunk) => sum + (chunk.size || 0), 0);
+        try {
+            // For large chunked files, we'll use a different approach
+            // Instead of trying to get file URLs which can fail, we'll stream the chunks directly
+            const { PassThrough } = require('stream');
+            const axios = require('axios');
+            
+            let totalSize = 0;
+            if (telegramData.chunks) {
+                totalSize = telegramData.chunks.reduce((sum, chunk) => sum + (chunk.size || 0), 0);
+            }
+            
+            const reconstructedStream = new PassThrough();
+            
+            // Stream chunks sequentially
+            const streamChunks = async () => {
+                try {
+                    for (let i = 0; i < telegramData.chunks.length; i++) {
+                        const chunk = telegramData.chunks[i];
+                        console.log(`Streaming chunk ${i + 1}/${telegramData.chunks.length} (size: ${chunk.size})`);
+                        
+                        try {
+                            // Use getFile to get the download URL
+                            const fileInfo = await this.bot.getFile(chunk.fileId);
+                            const fileUrl = `https://api.telegram.org/file/bot${this.botToken}/${fileInfo.file_path}`;
+                            
+                            const response = await axios({
+                                method: 'GET',
+                                url: fileUrl,
+                                responseType: 'stream',
+                                timeout: 30000 // 30 second timeout
+                            });
+                            
+                            // Pipe chunk data to the reconstructed stream
+                            await new Promise((resolve, reject) => {
+                                response.data.on('data', (data) => {
+                                    reconstructedStream.write(data);
+                                });
+                                
+                                response.data.on('end', () => {
+                                    console.log(`Chunk ${i + 1} streamed successfully`);
+                                    resolve();
+                                });
+                                
+                                response.data.on('error', (error) => {
+                                    console.error(`Error streaming chunk ${i + 1}:`, error);
+                                    reject(error);
+                                });
+                            });
+                            
+                        } catch (chunkError) {
+                            console.error(`Failed to stream chunk ${i + 1}:`, chunkError.message);
+                            // If a chunk fails, we can't continue the stream
+                            throw chunkError;
+                        }
+                    }
+                    
+                    // End the stream after all chunks are processed
+                    reconstructedStream.end();
+                    console.log('All chunks streamed successfully');
+                    
+                } catch (error) {
+                    console.error('Error in chunk streaming:', error);
+                    reconstructedStream.destroy(error);
+                }
+            };
+            
+            // Start streaming chunks in the background
+            streamChunks();
+            
+            const contentType = this.getContentType(telegramData.originalName || 'video.mp4');
+            
+            return {
+                stream: reconstructedStream,
+                contentLength: totalSize,
+                contentType: contentType,
+                acceptsRanges: false, // Range requests not supported for chunked files
+                range: null
+            };
+            
+        } catch (error) {
+            console.error('Chunked file streaming setup failed:', error);
+            throw new Error(`Cannot stream chunked file: ${error.message}`);
         }
-
-        const reconstructedStream = new Readable({
-            read() {
-                this.readNextChunk();
-            }
-        });
-
-        reconstructedStream.readNextChunk = async function() {
-            try {
-                if (currentChunkIndex >= telegramData.chunks.length) {
-                    this.push(null); // End stream
-                    return;
-                }
-
-                if (!currentChunkStream) {
-                    const chunk = telegramData.chunks[currentChunkIndex];
-                    currentChunkStream = this.bot.getFileStream(chunk.fileId);
-                    
-                    currentChunkStream.on('data', (data) => {
-                        this.push(data);
-                    });
-                    
-                    currentChunkStream.on('end', () => {
-                        currentChunkStream = null;
-                        currentChunkIndex++;
-                        this.readNextChunk();
-                    });
-                    
-                    currentChunkStream.on('error', (error) => {
-                        this.emit('error', error);
-                    });
-                }
-            } catch (error) {
-                this.emit('error', error);
-            }
-        }.bind(reconstructedStream);
-
-        const contentType = this.getContentType(telegramData.originalName || 'video.mp4');
-        
-        return {
-            stream: reconstructedStream,
-            contentLength: totalSize,
-            contentType: contentType,
-            acceptsRanges: false, // Range requests not supported for chunked files yet
-            range: null
-        };
     }
 
     /**

@@ -1,6 +1,7 @@
 const ffmpeg = require('fluent-ffmpeg');
 const path = require('path');
 const fs = require('fs-extra');
+const AudioExtractor = require('./audioExtractor');
 
 class VideoProcessor {
     constructor() {
@@ -11,6 +12,9 @@ class VideoProcessor {
         if (process.env.FFPROBE_PATH) {
             ffmpeg.setFfprobePath(process.env.FFPROBE_PATH);
         }
+        
+        // Initialize audio extractor
+        this.audioExtractor = new AudioExtractor();
     }
 
     async getBasicMetadata(videoPath) {
@@ -105,68 +109,571 @@ class VideoProcessor {
         const outputDir = path.join(__dirname, '..', 'hls', videoId);
         await fs.ensureDir(outputDir);
 
-        const playlistPath = path.join(outputDir, 'playlist.m3u8');
+        // Generate multiple quality levels
+        const qualities = this.getQualityLevels(metadata);
+        const masterPlaylistPath = path.join(outputDir, 'playlist.m3u8');
+        
+        // Generate each quality level
+        const variantPlaylists = [];
+        
+        for (const quality of qualities) {
+            try {
+                const variantPath = await this.generateHLSVariant(videoPath, outputDir, quality, metadata);
+                variantPlaylists.push({
+                    ...quality,
+                    playlist: path.basename(variantPath)
+                });
+            } catch (error) {
+                console.error(`Failed to generate ${quality.name} variant:`, error);
+            }
+        }
+        
+        // Create master playlist
+        if (variantPlaylists.length > 0) {
+            await this.createMasterHLSPlaylist(outputDir, variantPlaylists);
+            return masterPlaylistPath;
+        } else {
+            throw new Error('Failed to generate any HLS variants');
+        }
+    }
+    
+    /**
+     * Process multi-audio video with separate audio track extraction
+     * @param {string} videoPath - Path to the video file
+     * @param {string} videoId - Unique video identifier
+     * @param {Object} metadata - Video metadata
+     * @param {Function} progressCallback - Progress callback function
+     * @returns {Promise<Object>} Processing results with HLS and audio info
+     */
+    async processMultiAudioVideo(videoPath, videoId, metadata, progressCallback) {
+        const hasMultipleAudio = metadata.audio && metadata.audio.length > 1;
+        const results = {
+            hlsPath: null,
+            extractedAudioFiles: [],
+            audioHLSStreams: [],
+            videoOnlyHLS: null,
+            hasMultiAudio: hasMultipleAudio
+        };
+
+        try {
+            // Step 1: Extract individual audio tracks if multiple exist
+            if (hasMultipleAudio) {
+                if (progressCallback) {
+                    await progressCallback(5, 'Extracting audio tracks for multi-audio support', 'multi-audio');
+                }
+
+                results.extractedAudioFiles = await this.audioExtractor.extractAudioTracks(
+                    videoPath, 
+                    videoId, 
+                    metadata.audio,
+                    async (progress, stage) => {
+                        if (progressCallback) {
+                            const totalProgress = 5 + (progress * 0.15); // 5-20% for audio extraction
+                            await progressCallback(Math.round(totalProgress), `Audio extraction: ${stage}`, 'multi-audio');
+                        }
+                    }
+                );
+
+                console.log(`Extracted ${results.extractedAudioFiles.length} audio tracks`);
+            }
+
+            // Step 2: Create video-only HLS (no audio) for multi-audio videos
+            if (hasMultipleAudio) {
+                if (progressCallback) {
+                    await progressCallback(20, 'Creating video-only HLS stream', 'video-only');
+                }
+
+                results.videoOnlyHLS = await this.createVideoOnlyHLS(
+                    videoPath, 
+                    videoId, 
+                    metadata,
+                    async (progress, stage, quality) => {
+                        if (progressCallback) {
+                            const totalProgress = 20 + (progress * 0.4); // 20-60% for video-only HLS
+                            await progressCallback(Math.round(totalProgress), stage, quality);
+                        }
+                    }
+                );
+            }
+
+            // Step 3: Create regular HLS with audio (for single audio or fallback)
+            const hlsStartProgress = hasMultipleAudio ? 60 : 10;
+            const hlsProgressRange = hasMultipleAudio ? 25 : 80;
+
+            if (progressCallback) {
+                await progressCallback(hlsStartProgress, 'Creating standard HLS stream', null);
+            }
+
+            results.hlsPath = await this.convertToHLSWithProgress(
+                videoPath, 
+                videoId, 
+                metadata,
+                async (progress, stage, quality) => {
+                    if (progressCallback) {
+                        const totalProgress = hlsStartProgress + (progress * hlsProgressRange / 100);
+                        await progressCallback(Math.round(totalProgress), stage, quality);
+                    }
+                }
+            );
+
+            // Step 4: Create audio-only HLS streams for each extracted audio track
+            if (hasMultipleAudio && results.extractedAudioFiles.length > 0) {
+                if (progressCallback) {
+                    await progressCallback(85, 'Creating audio-only HLS streams', 'audio-hls');
+                }
+
+                results.audioHLSStreams = await this.audioExtractor.createAudioHLSStreams(
+                    results.extractedAudioFiles,
+                    videoId,
+                    async (progress, stage) => {
+                        if (progressCallback) {
+                            const totalProgress = 85 + (progress * 0.1); // 85-95% for audio HLS
+                            await progressCallback(Math.round(totalProgress), `Audio HLS: ${stage}`, 'audio-hls');
+                        }
+                    }
+                );
+
+                console.log(`Created ${results.audioHLSStreams.length} audio HLS streams`);
+            }
+
+            if (progressCallback) {
+                await progressCallback(100, 'Multi-audio processing complete', null);
+            }
+
+            return results;
+
+        } catch (error) {
+            console.error('Multi-audio processing failed:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Create video-only HLS stream (without audio) for multi-audio videos
+     * @param {string} videoPath - Source video path
+     * @param {string} videoId - Video identifier
+     * @param {Object} metadata - Video metadata
+     * @param {Function} progressCallback - Progress callback
+     * @returns {Promise<string>} Video-only HLS playlist path
+     */
+    async createVideoOnlyHLS(videoPath, videoId, metadata, progressCallback) {
+        const outputDir = path.join(__dirname, '..', 'hls', videoId, 'video-only');
+        await fs.ensureDir(outputDir);
+
+        // Generate multiple quality levels for video-only
+        const qualities = this.getQualityLevels(metadata);
+        const masterPlaylistPath = path.join(outputDir, 'playlist.m3u8');
+        
+        const variantPlaylists = [];
+        const totalQualities = qualities.length;
+
+        if (progressCallback) {
+            await progressCallback(0, 'Starting video-only HLS generation', null);
+        }
+
+        for (let i = 0; i < qualities.length; i++) {
+            const quality = qualities[i];
+            try {
+                if (progressCallback) {
+                    const baseProgress = (i / totalQualities) * 90;
+                    await progressCallback(Math.round(baseProgress), `Creating video-only ${quality.name}`, quality.name);
+                }
+
+                const variantPath = await this.generateVideoOnlyHLSVariant(
+                    videoPath, 
+                    outputDir, 
+                    quality, 
+                    metadata,
+                    progressCallback ? async (variantProgress) => {
+                        const totalProgress = ((i / totalQualities) + (variantProgress / 100) / totalQualities) * 90;
+                        await progressCallback(Math.round(totalProgress), `Processing video-only ${quality.name}`, quality.name);
+                    } : null
+                );
+                
+                variantPlaylists.push({
+                    ...quality,
+                    playlist: path.basename(variantPath)
+                });
+            } catch (error) {
+                console.error(`Failed to generate video-only ${quality.name} variant:`, error);
+            }
+        }
+
+        // Create master playlist for video-only
+        if (progressCallback) {
+            await progressCallback(95, 'Creating video-only master playlist', null);
+        }
+
+        if (variantPlaylists.length > 0) {
+            await this.createVideoOnlyMasterPlaylist(outputDir, variantPlaylists);
+            
+            if (progressCallback) {
+                await progressCallback(100, 'Video-only HLS generation complete', null);
+            }
+            
+            return masterPlaylistPath;
+        } else {
+            throw new Error('Failed to generate any video-only HLS variants');
+        }
+    }
+
+    /**
+     * Generate a single video-only HLS variant
+     * @param {string} videoPath - Source video path
+     * @param {string} outputDir - Output directory
+     * @param {Object} quality - Quality settings
+     * @param {Object} metadata - Video metadata
+     * @param {Function} progressCallback - Progress callback
+     * @returns {Promise<string>} Variant playlist path
+     */
+    async generateVideoOnlyHLSVariant(videoPath, outputDir, quality, metadata, progressCallback) {
+        const variantDir = path.join(outputDir, quality.name);
+        await fs.ensureDir(variantDir);
+        
+        const playlistPath = path.join(variantDir, 'playlist.m3u8');
+        const segmentPattern = path.join(variantDir, 'segment_%03d.ts').replace(/\\/g, '/');
         
         return new Promise((resolve, reject) => {
-            let command = ffmpeg(videoPath);
-
-            // Start with basic HLS settings
-            command = command
-                .format('hls')
+            const command = ffmpeg(videoPath)
                 .outputOptions([
-                    '-hls_time 10',
-                    '-hls_list_size 0',
-                    '-hls_segment_filename', path.join(outputDir, 'segment_%03d.ts'),
-                    '-preset fast',
-                    '-crf 23'
-                ]);
-
-            // Handle video encoding
-            if (metadata.video) {
-                command = command.videoCodec('libx264');
-                
-                // Scale down if too large
-                if (metadata.video.height > 1080) {
-                    command = command.size('1920x1080');
-                } else if (metadata.video.height > 720) {
-                    command = command.size('1280x720');
-                }
-            } else {
-                // If no video stream, copy as is
-                command = command.videoCodec('copy');
-            }
-
-            // Handle audio encoding
-            if (metadata.audio && metadata.audio.length > 0) {
-                command = command.audioCodec('aac').audioBitrate('128k');
-                
-                // Handle multiple audio tracks
-                if (metadata.audio.length > 1) {
-                    console.log(`Found ${metadata.audio.length} audio tracks, using first one`);
-                }
-            } else {
-                // If no audio, disable audio
-                command = command.noAudio();
-            }
-
-            command
+                    '-map', '0:v:0',  // Map only video, no audio
+                    '-an',  // No audio
+                    '-c:v', 'libx264',
+                    '-preset', 'fast',
+                    '-crf', '23',
+                    '-s', `${quality.width}x${quality.height}`,
+                    '-b:v', quality.videoBitrate,
+                    '-maxrate', quality.videoBitrate,
+                    '-bufsize', `${parseInt(quality.videoBitrate) * 2}k`,
+                    '-g', '48',
+                    '-keyint_min', '48',
+                    '-sc_threshold', '0',
+                    '-f', 'hls',
+                    '-hls_time', '6',
+                    '-hls_list_size', '0',
+                    '-hls_segment_filename', segmentPattern
+                ])
                 .output(playlistPath)
                 .on('start', (commandLine) => {
-                    console.log('FFmpeg command:', commandLine);
+                    console.log(`Generating video-only ${quality.name} HLS variant...`);
                 })
                 .on('progress', (progress) => {
-                    console.log(`Processing: ${Math.round(progress.percent || 0)}% done`);
+                    if (progress.percent && progressCallback) {
+                        progressCallback(Math.round(progress.percent)).catch(err => console.warn('Progress callback error:', err));
+                    }
                 })
                 .on('end', () => {
-                    console.log('HLS conversion completed');
+                    console.log(`Video-only ${quality.name} HLS variant completed`);
                     resolve(playlistPath);
                 })
                 .on('error', (err) => {
-                    console.error('FFmpeg error:', err);
+                    console.error(`Video-only ${quality.name} HLS error:`, err);
                     reject(err);
                 })
                 .run();
         });
+    }
+
+    /**
+     * Create master playlist for video-only HLS
+     * @param {string} outputDir - Output directory
+     * @param {Array} variants - Video variants
+     * @returns {Promise<string>} Master playlist path
+     */
+    async createVideoOnlyMasterPlaylist(outputDir, variants) {
+        let content = '#EXTM3U\n';
+        content += '#EXT-X-VERSION:4\n\n';
+        
+        // Add each variant (video-only)
+        variants.forEach(variant => {
+            const bandwidth = parseInt(variant.videoBitrate) * 1000;
+            content += `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth},RESOLUTION=${variant.width}x${variant.height},NAME="${variant.name}",CODECS="avc1.42E01E"\n`;
+            content += `${variant.name}/playlist.m3u8\n\n`;
+        });
+        
+        const masterPath = path.join(outputDir, 'playlist.m3u8');
+        await fs.writeFile(masterPath, content);
+        console.log('Video-only master HLS playlist created');
+        return masterPath;
+    }
+
+    async convertToHLSWithProgress(videoPath, videoId, metadata, progressCallback) {
+        const outputDir = path.join(__dirname, '..', 'hls', videoId);
+        await fs.ensureDir(outputDir);
+
+        // Generate multiple quality levels
+        const qualities = this.getQualityLevels(metadata);
+        const masterPlaylistPath = path.join(outputDir, 'playlist.m3u8');
+        
+        // Generate each quality level with progress tracking
+        const variantPlaylists = [];
+        const totalQualities = qualities.length;
+        
+        if (progressCallback) {
+            await progressCallback(0, 'Starting HLS generation');
+        }
+        
+        for (let i = 0; i < qualities.length; i++) {
+            const quality = qualities[i];
+            try {
+                if (progressCallback) {
+                    const baseProgress = (i / totalQualities) * 90; // Reserve 10% for finalization
+                    await progressCallback(Math.round(baseProgress), `Starting ${quality.name} quality`, quality.name);
+                }
+                
+                const variantPath = await this.generateHLSVariantWithProgress(
+                    videoPath, 
+                    outputDir, 
+                    quality, 
+                    metadata,
+                    progressCallback ? async (variantProgress) => {
+                        const totalProgress = ((i / totalQualities) + (variantProgress / 100) / totalQualities) * 90;
+                        await progressCallback(Math.round(totalProgress), `Processing ${quality.name}`, quality.name);
+                    } : null
+                );
+                
+                variantPlaylists.push({
+                    ...quality,
+                    playlist: path.basename(variantPath)
+                });
+                
+                // Notify quality completion
+                if (progressCallback) {
+                    const completedProgress = ((i + 1) / totalQualities) * 90;
+                    await progressCallback(Math.round(completedProgress), `Completed ${quality.name} quality`, quality.name);
+                }
+            } catch (error) {
+                console.error(`Failed to generate ${quality.name} variant:`, error);
+                if (progressCallback) {
+                    await progressCallback(Math.round(((i + 1) / totalQualities) * 90), `Failed to generate ${quality.name}`, quality.name);
+                }
+            }
+        }
+        
+        // Create master playlist
+        if (progressCallback) {
+            await progressCallback(95, 'Creating master playlist', null);
+        }
+        
+        if (variantPlaylists.length > 0) {
+            await this.createMasterHLSPlaylist(outputDir, variantPlaylists);
+            
+            if (progressCallback) {
+                await progressCallback(100, 'HLS generation complete', null);
+            }
+            
+            return masterPlaylistPath;
+        } else {
+            throw new Error('Failed to generate any HLS variants');
+        }
+    }
+    
+    getQualityLevels(metadata) {
+        const qualities = [];
+        const originalHeight = metadata.video?.height || 720;
+        
+        // Define available quality levels
+        const levels = [
+            { name: '1080p', width: 1920, height: 1080, videoBitrate: '5000k', audioBitrate: '192k' },
+            { name: '720p', width: 1280, height: 720, videoBitrate: '2800k', audioBitrate: '128k' },
+            { name: '480p', width: 854, height: 480, videoBitrate: '1400k', audioBitrate: '128k' },
+            { name: '360p', width: 640, height: 360, videoBitrate: '800k', audioBitrate: '96k' }
+        ];
+        
+        // Only include qualities up to the original resolution
+        return levels.filter(q => q.height <= originalHeight);
+    }
+    
+    async generateHLSVariant(videoPath, outputDir, quality, metadata) {
+        const variantDir = path.join(outputDir, quality.name);
+        await fs.ensureDir(variantDir);
+        
+        const playlistPath = path.join(variantDir, 'playlist.m3u8');
+        // Fix Windows path issues by using forward slashes for FFmpeg
+        const segmentPattern = path.join(variantDir, 'segment_%03d.ts').replace(/\\/g, '/');
+        
+        return new Promise((resolve, reject) => {
+            let command = ffmpeg(videoPath);
+            
+            // Handle multi-audio by mapping all available audio tracks to HLS
+            const audioMappings = [];
+            if (metadata.audio && metadata.audio.length > 0) {
+                // Map all audio tracks for HLS
+                for (let i = 0; i < Math.min(metadata.audio.length, 4); i++) { // Limit to 4 audio tracks
+                    audioMappings.push('-map', `0:a:${i}?`);
+                }
+            }
+            
+            command = command
+                .outputOptions([
+                    '-map', '0:v:0',  // Map video
+                    ...audioMappings   // Map audio tracks
+                ])
+                .videoCodec('libx264')
+                .size(`${quality.width}x${quality.height}`)
+                .videoBitrate(quality.videoBitrate);
+            
+            // Audio settings - handle multiple audio tracks
+            if (metadata.audio && metadata.audio.length > 0) {
+                command = command.audioCodec('aac');
+                
+                // Set audio parameters for each mapped track
+                for (let i = 0; i < Math.min(metadata.audio.length, 4); i++) {
+                    command = command.outputOptions([
+                        `-c:a:${i}`, 'aac',
+                        `-b:a:${i}`, quality.audioBitrate,
+                        `-ac:a:${i}`, '2' // Stereo
+                    ]);
+                }
+            } else {
+                // No audio
+                command = command.noAudio();
+            }
+            
+            // Add all HLS and encoding options together
+            command = command
+                .format('hls')
+                .outputOptions([
+                    '-preset', 'fast',
+                    '-crf', '23',
+                    '-g', '48',
+                    '-keyint_min', '48',
+                    '-sc_threshold', '0',
+                    '-hls_time', '6',
+                    '-hls_list_size', '0',
+                    '-hls_segment_filename', segmentPattern,
+                    '-maxrate', quality.videoBitrate,
+                    '-bufsize', `${parseInt(quality.videoBitrate) * 2}k`
+                ]);
+            
+            command
+                .output(playlistPath)
+                .on('start', (commandLine) => {
+                    console.log(`Generating ${quality.name} HLS variant...`);
+                })
+                .on('progress', (progress) => {
+                    if (progress.percent) {
+                        console.log(`${quality.name}: ${Math.round(progress.percent)}% done`);
+                    }
+                })
+                .on('end', () => {
+                    console.log(`${quality.name} HLS variant completed`);
+                    resolve(playlistPath);
+                })
+                .on('error', (err) => {
+                    console.error(`${quality.name} HLS error:`, err);
+                    reject(err);
+                })
+                .run();
+        });
+    }
+    
+    async generateHLSVariantWithProgress(videoPath, outputDir, quality, metadata, progressCallback) {
+        const variantDir = path.join(outputDir, quality.name);
+        await fs.ensureDir(variantDir);
+        
+        const playlistPath = path.join(variantDir, 'playlist.m3u8');
+        // Fix Windows path issues by using forward slashes for FFmpeg
+        const segmentPattern = path.join(variantDir, 'segment_%03d.ts').replace(/\\/g, '/');
+        
+        return new Promise((resolve, reject) => {
+            let command = ffmpeg(videoPath);
+            
+            // Handle multi-audio by mapping all available audio tracks to HLS
+            const audioMappings = [];
+            if (metadata.audio && metadata.audio.length > 0) {
+                // Map all audio tracks for HLS
+                for (let i = 0; i < Math.min(metadata.audio.length, 4); i++) { // Limit to 4 audio tracks
+                    audioMappings.push('-map', `0:a:${i}?`);
+                }
+            }
+            
+            command = command
+                .outputOptions([
+                    '-map', '0:v:0',  // Map video
+                    ...audioMappings   // Map audio tracks
+                ])
+                .videoCodec('libx264')
+                .size(`${quality.width}x${quality.height}`)
+                .videoBitrate(quality.videoBitrate);
+            
+            // Audio settings - handle multiple audio tracks
+            if (metadata.audio && metadata.audio.length > 0) {
+                command = command.audioCodec('aac');
+                
+                // Set audio parameters for each mapped track
+                for (let i = 0; i < Math.min(metadata.audio.length, 4); i++) {
+                    command = command.outputOptions([
+                        `-c:a:${i}`, 'aac',
+                        `-b:a:${i}`, quality.audioBitrate,
+                        `-ac:a:${i}`, '2' // Stereo
+                    ]);
+                }
+            } else {
+                // No audio
+                command = command.noAudio();
+            }
+            
+            // Add all HLS and encoding options together
+            command = command
+                .format('hls')
+                .outputOptions([
+                    '-preset', 'fast',
+                    '-crf', '23',
+                    '-g', '48',
+                    '-keyint_min', '48',
+                    '-sc_threshold', '0',
+                    '-hls_time', '6',
+                    '-hls_list_size', '0',
+                    '-hls_segment_filename', segmentPattern,
+                    '-maxrate', quality.videoBitrate,
+                    '-bufsize', `${parseInt(quality.videoBitrate) * 2}k`
+                ]);
+            
+            command
+                .output(playlistPath)
+                .on('start', (commandLine) => {
+                    console.log(`Generating ${quality.name} HLS variant...`);
+                    if (progressCallback) {
+                        progressCallback(0).catch(err => console.warn('Progress callback error:', err));
+                    }
+                })
+                .on('progress', (progress) => {
+                    if (progress.percent && progressCallback) {
+                        progressCallback(Math.round(progress.percent)).catch(err => console.warn('Progress callback error:', err));
+                        console.log(`${quality.name}: ${Math.round(progress.percent)}% done`);
+                    }
+                })
+                .on('end', () => {
+                    console.log(`${quality.name} HLS variant completed`);
+                    if (progressCallback) {
+                        progressCallback(100).catch(err => console.warn('Progress callback error:', err));
+                    }
+                    resolve(playlistPath);
+                })
+                .on('error', (err) => {
+                    console.error(`${quality.name} HLS error:`, err);
+                    reject(err);
+                })
+                .run();
+        });
+    }
+    
+    async createMasterHLSPlaylist(outputDir, variants) {
+        let content = '#EXTM3U\n';
+        content += '#EXT-X-VERSION:4\n\n';
+        
+        // Add each variant with improved audio support
+        variants.forEach(variant => {
+            const bandwidth = parseInt(variant.videoBitrate) * 1000 + parseInt(variant.audioBitrate) * 1000;
+            content += `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth},RESOLUTION=${variant.width}x${variant.height},NAME="${variant.name}",CODECS="avc1.42E01E,mp4a.40.2"\n`;
+            content += `${variant.name}/playlist.m3u8\n\n`;
+        });
+        
+        const masterPath = path.join(outputDir, 'playlist.m3u8');
+        await fs.writeFile(masterPath, content);
+        console.log('Master HLS playlist created with audio track support');
+        return masterPath;
     }
 
     addMultipleQualities(command, videoMetadata, outputDir) {
@@ -256,19 +763,38 @@ class VideoProcessor {
     }
 
     async extractThumbnail(videoPath, outputPath, timeOffset = '00:00:10') {
+        const outputDir = path.dirname(outputPath);
+        const outputFilename = path.basename(outputPath);
+        
+        // Ensure output directory exists
+        await fs.ensureDir(outputDir);
+        
         return new Promise((resolve, reject) => {
             ffmpeg(videoPath)
                 .screenshots({
                     timestamps: [timeOffset],
-                    filename: 'thumbnail.jpg',
-                    folder: path.dirname(outputPath),
-                    size: '320x240'
+                    filename: outputFilename,
+                    folder: outputDir,
+                    size: '640x360'  // Larger size for better quality
                 })
                 .on('end', () => {
                     resolve(outputPath);
                 })
                 .on('error', (err) => {
-                    reject(err);
+                    // Try with a different timestamp if the first one fails
+                    ffmpeg(videoPath)
+                        .screenshots({
+                            timestamps: ['00:00:01'],
+                            filename: outputFilename,
+                            folder: outputDir,
+                            size: '640x360'
+                        })
+                        .on('end', () => {
+                            resolve(outputPath);
+                        })
+                        .on('error', (finalErr) => {
+                            reject(finalErr);
+                        });
                 });
         });
     }
@@ -546,6 +1072,57 @@ class VideoProcessor {
                 .on('error', (error) => {
                     console.error('Preview generation failed:', error.message);
                     reject(error);
+                })
+                .run();
+        });
+    }
+    
+    async mergeAudioTracks(videoPath, audioTracks, outputPath) {
+        await fs.ensureDir(path.dirname(outputPath));
+        
+        return new Promise((resolve, reject) => {
+            let command = ffmpeg(videoPath);
+            
+            // Add each audio track as input
+            audioTracks.forEach(track => {
+                command = command.input(track.path);
+            });
+            
+            // Map video from first input
+            command = command.outputOptions(['-map', '0:v']);
+            
+            // Map original audio (if exists) as first track
+            command = command.outputOptions(['-map', '0:a?']);
+            
+            // Map additional audio tracks
+            audioTracks.forEach((track, index) => {
+                command = command.outputOptions([
+                    '-map', `${index + 1}:a`,
+                    `-metadata:s:a:${index + 1}`, `language=${track.language}`,
+                    `-metadata:s:a:${index + 1}`, `title=${track.language.toUpperCase()} Audio`
+                ]);
+            });
+            
+            // Copy video codec, encode audio
+            command = command
+                .videoCodec('copy')
+                .audioCodec('aac')
+                .audioBitrate('128k')
+                .outputOptions(['-movflags', '+faststart'])
+                .output(outputPath)
+                .on('start', (commandLine) => {
+                    console.log('Merging audio tracks with command:', commandLine);
+                })
+                .on('progress', (progress) => {
+                    console.log(`Merging progress: ${Math.round(progress.percent || 0)}%`);
+                })
+                .on('end', () => {
+                    console.log('Audio tracks merged successfully');
+                    resolve(outputPath);
+                })
+                .on('error', (err) => {
+                    console.error('Error merging audio tracks:', err);
+                    reject(err);
                 })
                 .run();
         });

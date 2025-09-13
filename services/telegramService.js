@@ -15,7 +15,10 @@ class TelegramService {
             return;
         }
 
-        this.bot = new TelegramBot(this.botToken, { polling: false });
+        this.bot = new TelegramBot(this.botToken, { 
+            polling: false,
+            filepath: false // This disables the deprecation warning about content-type
+        });
         this.maxFileSize = 50 * 1024 * 1024; // 50MB Telegram limit
         this.maxRetries = 3;
         this.retryDelay = 5000; // 5 seconds
@@ -27,15 +30,25 @@ class TelegramService {
             return { uploaded: false, reason: 'Service not configured' };
         }
 
+        // Verify file exists before attempting upload
+        if (!await fs.pathExists(videoPath)) {
+            console.error(`File not found for upload: ${videoPath}`);
+            return { uploaded: false, reason: 'File not found' };
+        }
+
         try {
             const stats = await fs.stat(videoPath);
             const fileSize = stats.size;
+            
+            console.log(`Starting Telegram upload: ${originalName} (${fileSize} bytes)`);
 
             // Skip checksum calculation for faster upload (can be done later if needed)
             let primaryResult;
             if (fileSize > this.maxFileSize) {
+                console.log('File exceeds single upload limit, using chunked upload');
                 primaryResult = await this.uploadLargeVideoWithRetry(videoPath, originalName, videoId, null);
             } else {
+                console.log('Using single file upload');
                 primaryResult = await this.uploadSmallVideoWithRetry(videoPath, originalName, videoId, null);
             }
 
@@ -79,9 +92,16 @@ class TelegramService {
         try {
             const caption = `📹 ${originalName}\n🆔 ${videoId}\n📅 ${new Date().toLocaleString()}`;
             
-            const result = await this.bot.sendVideo(this.channelId, videoPath, {
+            // Create a read stream for the file
+            const fileStream = fs.createReadStream(videoPath);
+            
+            const result = await this.bot.sendVideo(this.primaryChannelId, fileStream, {
                 caption: caption,
-                supports_streaming: true
+                supports_streaming: true,
+                filename: originalName
+            }, {
+                filename: originalName,
+                contentType: 'video/mp4'
             });
 
             return {
@@ -110,8 +130,15 @@ class TelegramService {
                 const chunkPath = chunks[i];
                 const caption = `📹 ${originalName} (Part ${i + 1}/${chunks.length})\n🆔 ${videoId}\n📅 ${new Date().toLocaleString()}`;
                 
-                const result = await this.bot.sendDocument(this.channelId, chunkPath, {
-                    caption: caption
+                // Create a read stream for the chunk
+                const chunkStream = fs.createReadStream(chunkPath);
+                
+                const result = await this.bot.sendDocument(this.primaryChannelId, chunkStream, {
+                    caption: caption,
+                    filename: `${originalName}.part${i + 1}`
+                }, {
+                    filename: `${originalName}.part${i + 1}`,
+                    contentType: 'application/octet-stream'
                 });
 
                 uploadedChunks.push({
@@ -292,9 +319,16 @@ class TelegramService {
             `📹 ${originalName}\n🆔 ${videoId}\n📅 ${new Date().toLocaleString()}\n🔐 ${checksum.substring(0, 16)}...` :
             `📹 ${originalName}\n🆔 ${videoId}\n📅 ${new Date().toLocaleString()}`;
         
-        const result = await this.bot.sendVideo(channelId, videoPath, {
+        // Create a read stream for the file
+        const fileStream = fs.createReadStream(videoPath);
+        
+        const result = await this.bot.sendVideo(channelId, fileStream, {
             caption: caption,
-            supports_streaming: true
+            supports_streaming: true,
+            filename: originalName
+        }, {
+            filename: originalName,
+            contentType: 'video/mp4'
         });
 
         return {
@@ -322,8 +356,15 @@ class TelegramService {
                 `📹 ${originalName} (Part ${i + 1}/${chunks.length})\n🆔 ${videoId}\n📅 ${new Date().toLocaleString()}\n🔐 ${checksum.substring(0, 16)}...` :
                 `📹 ${originalName} (Part ${i + 1}/${chunks.length})\n🆔 ${videoId}\n📅 ${new Date().toLocaleString()}`;
             
-            const result = await this.bot.sendDocument(channelId, chunkPath, {
-                caption: caption
+            // Create a read stream for the chunk
+            const chunkStream = fs.createReadStream(chunkPath);
+            
+            const result = await this.bot.sendDocument(channelId, chunkStream, {
+                caption: caption,
+                filename: `${originalName}.part${i + 1}`
+            }, {
+                filename: `${originalName}.part${i + 1}`,
+                contentType: 'application/octet-stream'
             });
 
             uploadedChunks.push({
@@ -407,6 +448,136 @@ class TelegramService {
             };
         } catch (error) {
             return { healthy: false, error: error.message };
+        }
+    }
+
+    /**
+     * Upload HLS segments and playlists to Telegram for complete cloud storage
+     * @param {string} hlsDir - Directory containing HLS files
+     * @param {string} videoId - Video identifier
+     * @returns {Promise<Object>} Upload results
+     */
+    async uploadHLSFiles(hlsDir, videoId) {
+        if (!this.bot || !await fs.pathExists(hlsDir)) {
+            return { uploaded: false, reason: 'Service not configured or HLS directory not found' };
+        }
+
+        try {
+            console.log(`Uploading HLS files from ${hlsDir}`);
+            const hlsFiles = [];
+            
+            // Recursively find all HLS files
+            const findHLSFiles = async (dir, relativePath = '') => {
+                const files = await fs.readdir(dir);
+                
+                for (const file of files) {
+                    const fullPath = path.join(dir, file);
+                    const relativeFilePath = path.join(relativePath, file);
+                    const stats = await fs.stat(fullPath);
+                    
+                    if (stats.isDirectory()) {
+                        await findHLSFiles(fullPath, relativeFilePath);
+                    } else if (file.endsWith('.m3u8') || file.endsWith('.ts')) {
+                        hlsFiles.push({
+                            fullPath,
+                            relativePath: relativeFilePath,
+                            size: stats.size
+                        });
+                    }
+                }
+            };
+            
+            await findHLSFiles(hlsDir);
+            console.log(`Found ${hlsFiles.length} HLS files to upload`);
+            
+            if (hlsFiles.length === 0) {
+                return { uploaded: false, reason: 'No HLS files found' };
+            }
+            
+            // Check if we should skip HLS upload due to large number of files
+            if (hlsFiles.length > 100) {
+                console.log('Skipping HLS upload due to large number of files (>100) - would hit rate limits');
+                return { 
+                    uploaded: false, 
+                    reason: 'Too many HLS files - would exceed Telegram rate limits',
+                    totalFiles: hlsFiles.length,
+                    recommendation: 'HLS files kept locally for streaming'
+                };
+            }
+            
+            // Upload files with rate limiting protection
+            const uploadResults = [];
+            const batchSize = 3; // Reduced batch size to avoid rate limiting
+            const batchDelay = 3000; // 3 seconds between batches
+            const retryDelay = 45000; // 45 seconds when rate limited
+            
+            for (let i = 0; i < hlsFiles.length; i += batchSize) {
+                const batch = hlsFiles.slice(i, i + batchSize);
+                console.log(`Uploading HLS batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(hlsFiles.length / batchSize)}`);
+                
+                const batchPromises = batch.map(async (file) => {
+                    let retries = 0;
+                    const maxRetries = 3;
+                    
+                    while (retries < maxRetries) {
+                        try {
+                            const fileStream = fs.createReadStream(file.fullPath);
+                            const caption = `📁 HLS: ${file.relativePath}\n🆔 ${videoId}\n📅 ${new Date().toLocaleString()}`;
+                            
+                            const result = await this.bot.sendDocument(this.primaryChannelId, fileStream, {
+                                caption: caption,
+                                filename: file.relativePath
+                            });
+                            
+                            return {
+                                relativePath: file.relativePath,
+                                messageId: result.message_id,
+                                fileId: result.document.file_id,
+                                uploaded: true
+                            };
+                            
+                        } catch (error) {
+                            if (error.message.includes('429') || error.message.includes('Too Many Requests')) {
+                                console.log(`Rate limited for ${file.relativePath}, waiting ${retryDelay}ms...`);
+                                await this.sleep(retryDelay);
+                                retries++;
+                                if (retries < maxRetries) continue;
+                            }
+                            
+                            console.warn(`Failed to upload HLS file ${file.relativePath}:`, error.message);
+                            return {
+                                relativePath: file.relativePath,
+                                uploaded: false,
+                                error: error.message
+                            };
+                        }
+                    }
+                });
+                
+                const batchResults = await Promise.all(batchPromises);
+                uploadResults.push(...batchResults);
+                
+                // Longer delay between batches to avoid rate limiting
+                if (i + batchSize < hlsFiles.length) {
+                    console.log(`Waiting ${batchDelay}ms before next batch...`);
+                    await this.sleep(batchDelay);
+                }
+            }
+            
+            const successfulUploads = uploadResults.filter(r => r.uploaded).length;
+            console.log(`HLS upload completed: ${successfulUploads}/${hlsFiles.length} files uploaded`);
+            
+            return {
+                uploaded: successfulUploads > 0,
+                totalFiles: hlsFiles.length,
+                successfulUploads,
+                uploadResults,
+                uploadMethod: 'hls-batch'
+            };
+            
+        } catch (error) {
+            console.error('HLS upload error:', error);
+            return { uploaded: false, error: error.message };
         }
     }
 
