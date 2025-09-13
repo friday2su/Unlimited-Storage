@@ -34,8 +34,8 @@ A modern, minimalist video streaming platform that leverages Telegram as an unli
 
 1. **Clone the repository**
 ```bash
-git clone https://github.com/friday2su/unlimited.git
-cd unlimited
+git clone https://github.com/friday2su/Unlimited-Storage.git
+cd Unlimited-Storage
 ```
 
 2.  **Install Dependencies**
