@@ -20,6 +20,7 @@ class TelegramService {
             filepath: false // This disables the deprecation warning about content-type
         });
         this.maxFileSize = 50 * 1024 * 1024; // 50MB Telegram limit
+        this.maxChunkSize = 19 * 1024 * 1024; // 19MB chunks (under 20MB Bot API download limit)
         this.maxRetries = 3;
         this.retryDelay = 5000; // 5 seconds
     }
@@ -122,7 +123,7 @@ class TelegramService {
     async uploadLargeVideo(videoPath, originalName, videoId) {
         try {
             // For large files, split into chunks
-            const chunkSize = 45 * 1024 * 1024; // 45MB chunks
+            const chunkSize = this.maxChunkSize; // 19MB chunks (under 20MB Bot API download limit)
             const chunks = await this.splitVideoFile(videoPath, chunkSize);
             const uploadedChunks = [];
 
@@ -346,7 +347,7 @@ class TelegramService {
 
     async uploadLargeVideoToChannel(videoPath, originalName, videoId, checksum, channelId) {
         // For large files, split into chunks
-        const chunkSize = 45 * 1024 * 1024; // 45MB chunks
+        const chunkSize = this.maxChunkSize; // 19MB chunks (under 20MB Bot API download limit)
         const chunks = await this.splitVideoFile(videoPath, chunkSize);
         const uploadedChunks = [];
 

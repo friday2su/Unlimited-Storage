@@ -80,6 +80,14 @@ class DatabaseService {
             throw new Error('Video not found');
         }
 
+        // Deep merge for processingStatus to prevent overwrites
+        if (updates.processingStatus && video.processingStatus) {
+            updates.processingStatus = { 
+                ...video.processingStatus, 
+                ...updates.processingStatus 
+            };
+        }
+
         // Merge the updates with existing video data
         const updatedVideo = { 
             ...video, 

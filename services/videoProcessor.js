@@ -456,7 +456,7 @@ class VideoProcessor {
         }
         
         if (variantPlaylists.length > 0) {
-            await this.createMasterHLSPlaylist(outputDir, variantPlaylists);
+            await this.createMasterHLSPlaylist(outputDir, variantPlaylists, metadata.audio, videoId);
             
             if (progressCallback) {
                 await progressCallback(100, 'HLS generation complete', null);
@@ -534,12 +534,12 @@ class VideoProcessor {
             command = command
                 .format('hls')
                 .outputOptions([
-                    '-preset', 'fast',
-                    '-crf', '23',
+                    '-preset', 'veryfast', // Faster preset
+                    '-crf', '28', // Higher CRF for faster encoding
                     '-g', '48',
                     '-keyint_min', '48',
                     '-sc_threshold', '0',
-                    '-hls_time', '6',
+                    '-hls_time', '4', // Shorter segments
                     '-hls_list_size', '0',
                     '-hls_segment_filename', segmentPattern,
                     '-maxrate', quality.videoBitrate,
@@ -618,12 +618,12 @@ class VideoProcessor {
             command = command
                 .format('hls')
                 .outputOptions([
-                    '-preset', 'fast',
-                    '-crf', '23',
+                    '-preset', 'veryfast', // Faster preset
+                    '-crf', '28', // Higher CRF for faster encoding
                     '-g', '48',
                     '-keyint_min', '48',
                     '-sc_threshold', '0',
-                    '-hls_time', '6',
+                    '-hls_time', '4', // Shorter segments
                     '-hls_list_size', '0',
                     '-hls_segment_filename', segmentPattern,
                     '-maxrate', quality.videoBitrate,
@@ -659,17 +659,26 @@ class VideoProcessor {
         });
     }
     
-    async createMasterHLSPlaylist(outputDir, variants) {
+    async createMasterHLSPlaylist(outputDir, variants, audioTracks, videoId) {
         let content = '#EXTM3U\n';
         content += '#EXT-X-VERSION:4\n\n';
-        
+    
+        // Add audio tracks as alternatives
+        if (audioTracks && audioTracks.length > 0) {
+            const defaultAudio = audioTracks.find(t => t.isDefault) || audioTracks[0];
+            audioTracks.forEach(track => {
+                content += `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="${track.title}",LANGUAGE="${track.language}",DEFAULT="${track.index === defaultAudio.index ? 'YES' : 'NO'}",AUTOSELECT=YES,URI="../audio/track_${track.index}/playlist.m3u8"\n`;
+            });
+        }
+    
         // Add each variant with improved audio support
         variants.forEach(variant => {
             const bandwidth = parseInt(variant.videoBitrate) * 1000 + parseInt(variant.audioBitrate) * 1000;
-            content += `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth},RESOLUTION=${variant.width}x${variant.height},NAME="${variant.name}",CODECS="avc1.42E01E,mp4a.40.2"\n`;
+            const audioGroupId = (audioTracks && audioTracks.length > 0) ? ',AUDIO="audio"' : '';
+            content += `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth},RESOLUTION=${variant.width}x${variant.height},NAME="${variant.name}",CODECS="avc1.42E01E,mp4a.40.2"${audioGroupId}\n`;
             content += `${variant.name}/playlist.m3u8\n\n`;
         });
-        
+    
         const masterPath = path.join(outputDir, 'playlist.m3u8');
         await fs.writeFile(masterPath, content);
         console.log('Master HLS playlist created with audio track support');
@@ -764,7 +773,7 @@ class VideoProcessor {
 
     async extractThumbnail(videoPath, outputPath, timeOffset = '00:00:10') {
         const outputDir = path.dirname(outputPath);
-        const outputFilename = path.basename(outputPath);
+        const outputFilename =
         
         // Ensure output directory exists
         await fs.ensureDir(outputDir);

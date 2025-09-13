@@ -151,6 +151,12 @@ class CloudStreamingService {
                         console.log(`Streaming chunk ${i + 1}/${telegramData.chunks.length} (size: ${chunk.size})`);
                         
                         try {
+                            // Check if chunk size exceeds Bot API download limit (20MB)
+                            if (chunk.size && chunk.size > 20 * 1024 * 1024) {
+                                console.error(`Chunk ${i + 1} is too large (${chunk.size} bytes) for Bot API download. Max is 20MB.`);
+                                throw new Error(`Chunk exceeds 20MB Bot API limit. This video needs to be re-uploaded with smaller chunks.`);
+                            }
+                            
                             // Use getFile to get the download URL
                             const fileInfo = await this.bot.getFile(chunk.fileId);
                             const fileUrl = `https://api.telegram.org/file/bot${this.botToken}/${fileInfo.file_path}`;
@@ -181,7 +187,19 @@ class CloudStreamingService {
                             
                         } catch (chunkError) {
                             console.error(`Failed to stream chunk ${i + 1}:`, chunkError.message);
-                            // If a chunk fails, we can't continue the stream
+                            
+                            // Check if error is due to file size limit
+                            if (chunkError.message && (chunkError.message.includes('file is too big') ||
+                                chunkError.message.includes('exceeds 20MB'))) {
+                                const errorMsg = `Cannot stream: Video was uploaded with chunks larger than 20MB. ` +
+                                               `Please re-upload the video to fix this issue. ` +
+                                               `The new upload will use 19MB chunks that are compatible with streaming.`;
+                                console.error(errorMsg);
+                                reconstructedStream.destroy(new Error(errorMsg));
+                                return;
+                            }
+                            
+                            // For other errors, we still can't continue the stream
                             throw chunkError;
                         }
                     }

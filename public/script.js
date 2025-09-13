@@ -218,6 +218,8 @@ class StreamDriveApp {
         // Get cloud thumbnail URL
         const thumbnailUrl = video.cloudThumbnail 
             ? `/api/thumbnail/${video.id}` 
+            : (video.processing && !video.cloudThumbnail)
+            ? `/api/thumbnail/${video.id}?t=${Date.now()}` // Force refresh
             : null;
 
         const thumbnailHtml = thumbnailUrl 
