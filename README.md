@@ -1,4 +1,4 @@
-# 🎬 Unlimited - Telegram Cloud Video Platform
+# 🎬 Unlimited Storage - Telegram Cloud Video Platform
 
 A modern, minimalist video streaming platform that leverages Telegram as an unlimited cloud storage backend. Stream, store, and manage your videos with a beautiful and intuitive dark-themed interface.
 
